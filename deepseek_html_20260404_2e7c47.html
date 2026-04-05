@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>DeepSeek 智能助手</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: system-ui, 'Segoe UI', 'Noto Sans', sans-serif; background: #f5f5f7; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+        .chat-container { max-width: 800px; width: 100%; background: white; border-radius: 28px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); overflow: hidden; display: flex; flex-direction: column; height: 85vh; }
+        .chat-header { background: #0f172a; color: white; padding: 18px 24px; font-size: 1.4rem; font-weight: 600; text-align: center; }
+        .chat-messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; background: #ffffff; }
+        .message { display: flex; flex-direction: column; max-width: 85%; padding: 12px 16px; border-radius: 24px; line-height: 1.5; word-wrap: break-word; white-space: pre-wrap; }
+        .user-message { align-self: flex-end; background-color: #0f172a; color: white; border-bottom-right-radius: 6px; }
+        .assistant-message { align-self: flex-start; background-color: #f1f5f9; color: #1e293b; border-bottom-left-radius: 6px; }
+        .message-content { margin: 0; }
+        .chat-input-area { display: flex; padding: 16px; border-top: 1px solid #e2e8f0; background: white; gap: 12px; }
+        .chat-input { flex: 1; padding: 12px 16px; border: 1px solid #cbd5e1; border-radius: 40px; font-size: 1rem; outline: none; transition: 0.2s; resize: vertical; font-family: inherit; }
+        .chat-input:focus { border-color: #0f172a; box-shadow: 0 0 0 2px rgba(15,23,42,0.2); }
+        .send-button { background: #0f172a; color: white; border: none; border-radius: 40px; padding: 0 24px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 1rem; }
+        .send-button:hover { background: #1e293b; }
+        .send-button:disabled { background: #94a3b8; cursor: not-allowed; }
+        .loading { display: inline-block; width: 24px; height: 24px; border: 3px solid #e2e8f0; border-top-color: #0f172a; border-radius: 50%; animation: spin 0.6s linear infinite; margin: 10px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @media (max-width: 640px) { body { padding: 10px; } .chat-container { height: 92vh; border-radius: 20px; } .message { max-width: 90%; } .chat-header { padding: 14px 20px; font-size: 1.2rem; } }
+    </style>
+</head>
+<body>
+<div class="chat-container">
+    <div class="chat-header">🤖 DeepSeek 智能助手</div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input-area">
+        <textarea class="chat-input" id="userInput" placeholder="输入你的问题..." rows="1"></textarea>
+        <button class="send-button" id="sendBtn">发送</button>
+    </div>
+</div>
+
+<script>
+    // ================== 配置区域 ==================
+    // ⚠️ 重要：请将下面 'YOUR_API_KEY' 替换为你自己的 DeepSeek API Key
+    const API_KEY = sk-9e17992066514d6e9d779e82767e5823;
+    const API_URL = 'https://api.deepseek.com/chat/completions';
+    const MODEL = 'deepseek-chat';      // 通用对话模型
+    // ==========================================
+
+    const chatMessagesDiv = document.getElementById('chatMessages');
+    const userInput = document.getElementById('userInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    // 存储对话历史（用于多轮对话上下文）
+    let conversationHistory = [
+        { role: 'system', content: '你是一个有用的智能助手，请用中文回答问题。' }
+    ];
+
+    // 自动调整文本框高度
+    function autoResizeTextarea() {
+        userInput.style.height = 'auto';
+        userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+    }
+    userInput.addEventListener('input', autoResizeTextarea);
+    
+    // 渲染所有消息到界面（恢复历史）
+    function renderMessages() {
+        chatMessagesDiv.innerHTML = '';
+        // 跳过 system 消息，只显示 user 和 assistant
+        for (const msg of conversationHistory) {
+            if (msg.role === 'user') {
+                addMessageToUI('user', msg.content);
+            } else if (msg.role === 'assistant') {
+                addMessageToUI('assistant', msg.content);
+            }
+        }
+        scrollToBottom();
+    }
+
+    // 添加单条消息到 UI
+    function addMessageToUI(role, content) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${role === 'user' ? 'user-message' : 'assistant-message'}`;
+        const contentP = document.createElement('div');
+        contentP.className = 'message-content';
+        contentP.innerText = content;
+        messageDiv.appendChild(contentP);
+        chatMessagesDiv.appendChild(messageDiv);
+        scrollToBottom();
+    }
+
+    function scrollToBottom() {
+        chatMessagesDiv.scrollTop = chatMessagesDiv.scrollHeight;
+    }
+
+    // 显示/隐藏加载动画
+    let loadingDiv = null;
+    function showLoading() {
+        if (loadingDiv) return;
+        loadingDiv = document.createElement('div');
+        loadingDiv.className = 'message assistant-message';
+        const spinner = document.createElement('div');
+        spinner.className = 'loading';
+        loadingDiv.appendChild(spinner);
+        chatMessagesDiv.appendChild(loadingDiv);
+        scrollToBottom();
+    }
+    function hideLoading() {
+        if (loadingDiv) {
+            loadingDiv.remove();
+            loadingDiv = null;
+        }
+    }
+
+    // 核心：调用 DeepSeek API（非流式）
+    async function callDeepSeek(userMessage) {
+        // 将用户消息加入历史
+        conversationHistory.push({ role: 'user', content: userMessage });
+        
+        // 准备请求体（注意保持 messages 数组的完整顺序）
+        const payload = {
+            model: MODEL,
+            messages: conversationHistory,
+            stream: false,      // 为简化教程，这里关闭流式输出
+            max_tokens: 2048,
+            temperature: 0.7
+        };
+        
+        try {
+            const response = await fetch(API_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: JSON.stringify(payload)
+            });
+            
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(`API 请求失败 (${response.status}): ${JSON.stringify(errorData)}`);
+            }
+            
+            const data = await response.json();
+            const assistantReply = data.choices[0].message.content;
+            
+            // 将助手回复加入历史
+            conversationHistory.push({ role: 'assistant', content: assistantReply });
+            
+            return assistantReply;
+        } catch (error) {
+            console.error('调用 DeepSeek API 出错:', error);
+            throw error;
+        }
+    }
+
+    // 处理发送消息
+    async function handleSend() {
+        const message = userInput.value.trim();
+        if (!message) return;
+        
+        // 清空输入框，调整高度
+        userInput.value = '';
+        autoResizeTextarea();
+        
+        // 立即显示用户消息
+        addMessageToUI('user', message);
+        
+        // 显示加载动画
+        showLoading();
+        sendBtn.disabled = true;
+        
+        try {
+            const reply = await callDeepSeek(message);
+            hideLoading();
+            addMessageToUI('assistant', reply);
+        } catch (err) {
+            hideLoading();
+            addMessageToUI('assistant', `❌ 出错了: ${err.message || '请检查 API Key 或网络连接'}`);
+            // 发生错误时，移除刚加入历史的用户消息，避免状态混乱
+            conversationHistory.pop(); // 移除 user 消息
+        } finally {
+            sendBtn.disabled = false;
+            userInput.focus();
+        }
+    }
+
+    // 绑定事件
+    sendBtn.addEventListener('click', handleSend);
+    userInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            handleSend();
+        }
+    });
+    
+    // 初始化欢迎消息
+    if (conversationHistory.length === 1) {
+        addMessageToUI('assistant', '你好！我是你的智能助手，请问有什么可以帮助你的？');
+    }
+    renderMessages();
+</script>
+</body>
+</html>
